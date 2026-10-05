@@ -4,6 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFile } = require('child_process');
 
 const DATA = path.join(__dirname, 'data');
 const CONFIG_FILE = path.join(DATA, 'config.json');
@@ -27,6 +28,7 @@ const config = {
   radiusKm: 20,
   intervalMin: 10,
   selected: [],
+  publish: false, // true면 조회가 끝날 때마다 data.json을 깃허브에 올린다 (깃허브 페이지용)
   ...readJson(CONFIG_FILE, {}),
 };
 const saveConfig = () => writeJson(CONFIG_FILE, config);
@@ -265,6 +267,29 @@ async function cycle() {
     status.running = false;
     status.progress = '';
     if (rerun) { rerun = false; setImmediate(cycle); }
+    else if (config.publish) publish();
+  }
+}
+
+// 깃허브 서버 IP는 세븐일레븐이 막아서, 이 맥이 조회한 결과만 올려 깃허브 페이지가 읽게 한다.
+const git = (...args) => new Promise((resolve, reject) => {
+  execFile('git', args, { cwd: __dirname, timeout: 60000 }, (err, out, errOut) => (err ? reject(new Error(errOut || err.message)) : resolve(out)));
+});
+let publishing = false;
+async function publish() {
+  if (publishing) return;
+  publishing = true;
+  try {
+    writeJson(path.join(__dirname, 'data.json'), snapshot());
+    await git('add', 'data.json');
+    await git('commit', '-q', '-m', '재고 갱신');
+    await git('push', '-q');
+    delete status.errors.publish;
+  } catch (e) {
+    status.errors.publish = `깃허브 올리기 실패: ${e.message.trim().split('\n').pop()}`;
+    console.error(new Date().toLocaleTimeString(), 'publish', e.message);
+  } finally {
+    publishing = false;
   }
 }
 
@@ -276,6 +301,10 @@ function schedule() {
 }
 
 // ---------- HTTP ----------
+// 한 박스 이상 있는 재고만 보여준다: 30주년 20개, 하이클래스 10개, 나머지 팩 30개 이상.
+const unitOf = (name) => (/하이클래스/.test(name) ? 10 : /30주년/.test(name) ? 20 : 30);
+const isBoxQty = (name, qty) => qty >= unitOf(name);
+
 function snapshot() {
   const storeIdx = {};
   for (const chain of Object.keys(api)) {
@@ -290,6 +319,7 @@ function snapshot() {
     if (!s || !config.selected.includes(code)) continue;
     const d = distKm(lat, lng, s.lat, s.lng);
     if (d > config.radiusKm) continue;
+    if (!isBoxQty(names.get(code) ?? '', v.qty)) continue;
     stock.push({ chain, storeCd, store: s.name, addr: s.addr, lat: s.lat, lng: s.lng, distKm: +d.toFixed(2), code, product: names.get(code) ?? code, qty: v.qty, at: v.at });
   }
   return {
@@ -299,7 +329,7 @@ function snapshot() {
     chains: CHAINS,
     catalog: catalog.map((p) => ({ ...p, selected: config.selected.includes(p.code) })),
     stock,
-    events: state.events.slice(0, 100),
+    events: state.events.filter((e) => isBoxQty(e.product, e.to) || isBoxQty(e.product, e.from)).slice(0, 100),
     status,
   };
 }
