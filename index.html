@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>포켓몬카드 편의점 재고</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--fg:#1b1f24;--muted:#6b7280;--line:#e5e7eb;--accent:#0a7d4f;--accent-bg:#e6f4ee;--bad:#b91c1c;--chip:#eef0f3;--seven:#e8590c;--emart24:#b98a00}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#181b21;--fg:#e7e9ee;--muted:#9aa3af;--line:#2a2f37;--accent:#34c38f;--accent-bg:#133126;--bad:#f87171;--chip:#232830;--seven:#ff922b;--emart24:#fcc419}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo",sans-serif}
+header{position:sticky;top:0;z-index:1000;background:var(--card);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;gap:8px 12px;align-items:center;flex-wrap:wrap}
+header h1{font-size:16px;margin:0}
+.status{color:var(--muted);font-size:12px;flex:1;min-width:180px}
+main{max-width:1100px;margin:0 auto;padding:16px;display:grid;gap:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;min-width:0}
+.card h2{font-size:14px;margin:0 0 10px}
+button,input{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:8px;padding:6px 10px}
+button{cursor:pointer}
+input{width:70px}
+.products{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px}
+.prod{padding:10px;border:1px solid var(--line);border-radius:10px;cursor:pointer;user-select:none}
+.prod.sel{border-color:var(--accent);background:var(--accent-bg)}
+.prod .n{font-weight:600}
+.muted{color:var(--muted);font-size:12px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.chip{padding:4px 10px;border-radius:999px;background:var(--chip);cursor:pointer;font-size:12px;border:1px solid transparent}
+.chip.on{background:var(--accent-bg);border-color:var(--accent);color:var(--accent);font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;color:var(--muted);font-weight:500;border-bottom:1px solid var(--line);padding:6px 4px}
+td{border-bottom:1px solid var(--line);padding:7px 4px;vertical-align:top}
+.q{font-weight:700;color:var(--accent);white-space:nowrap}
+.tag{font-size:11px;padding:1px 6px;border-radius:6px;background:var(--chip);white-space:nowrap;font-weight:600}
+.tag.seven{color:var(--seven)}.tag.emart24{color:var(--emart24)}
+.up{color:var(--accent)}.down{color:var(--bad)}
+.err{color:var(--bad);font-size:12px}
+.empty{color:var(--muted);text-align:center;padding:24px}
+.scroll{max-height:360px;overflow:auto}
+#map{height:360px;border-radius:10px;margin-top:14px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+a{color:inherit}
+</style>
+</head>
+<body>
+<header>
+  <h1>포켓몬카드 편의점 재고</h1>
+  <div class="status" id="status">불러오는 중…</div>
+  <button id="refresh">지금 조회</button>
+</header>
+<main>
+  <section class="card">
+    <h2>추적할 카드 <span class="muted" id="prodHint">눌러서 켜고 끕니다</span></h2>
+    <div class="products" id="products"></div>
+    <div class="err" id="errors"></div>
+  </section>
+  <section class="card">
+    <h2 id="stockTitle">재고 있는 매장</h2>
+    <div class="chips" id="filters"></div>
+    <div class="scroll" style="max-height:480px">
+      <table><thead><tr><th>매장</th><th>재고</th><th style="text-align:right">거리</th></tr></thead><tbody id="stock"></tbody></table>
+    </div>
+    <div id="map"></div>
+  </section>
+  <section class="card">
+    <h2>최근 변동</h2>
+    <div class="scroll"><table><tbody id="events"></tbody></table></div>
+  </section>
+  <section class="card">
+    <h2>설정</h2>
+    <div class="row">
+      <span id="centerLabel"></span>
+      <label>반경 <input id="radius" type="number" min="1" max="30"> km</label>
+      <label>조회 주기 <input id="interval" type="number" min="3" max="120"> 분</label>
+      <button id="save">저장</button>
+      <button id="pick">지도에서 기준 위치 바꾸기</button>
+    </div>
+    <p class="muted">세븐일레븐·이마트24만 조회합니다. 재고는 편의점 앱 기준이라 실제와 다를 수 있습니다.</p>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const ago = (t) => {
+  if (!t) return '-';
+  const m = Math.round((Date.now() - t) / 60000);
+  return m < 1 ? '방금' : m < 60 ? `${m}분 전` : m < 1440 ? `${Math.round(m / 60)}시간 전` : `${Math.round(m / 1440)}일 전`;
+};
+const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }).then((r) => r.json());
+
+// github.io 에서는 서버 없이 Actions가 만들어 둔 data.json만 읽는다.
+const STATIC = location.hostname.endsWith('github.io');
+let S = null;
+let filter = 'all';
+let picking = false;
+const map = L.map('map');
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(map);
+const layer = L.layerGroup().addTo(map);
+let fitted = '';
+
+function render() {
+  const st = S.status;
+  $('status').textContent = st.running
+    ? (st.progress || '조회 중…')
+    : `마지막 조회 ${ago(st.lastRun)} · ${S.intervalMin}분마다 갱신`;
+  $('errors').textContent = Object.values(st.errors).join(' / ');
+
+  $('products').innerHTML = S.catalog.length
+    ? S.catalog
+        .filter((p) => !STATIC || p.selected)
+        .sort((a, b) => b.selected - a.selected || b.price - a.price)
+        .map((p) => `<div class="prod ${p.selected ? 'sel' : ''}" data-code="${esc(p.code)}">
+          <div class="n">${esc(p.name)}</div>
+          <div class="muted">${p.price.toLocaleString()}원 · ${p.chains.map((c) => S.chains[c]).join(', ')}</div></div>`)
+        .join('')
+    : '<div class="empty">상품 목록을 불러오는 중…</div>';
+
+  const selected = S.catalog.filter((p) => p.selected);
+  $('filters').innerHTML = [['all', '전체'], ...Object.entries(S.chains), ...selected.map((p) => [p.code, p.name])]
+    .map(([k, label]) => `<span class="chip ${filter === k ? 'on' : ''}" data-f="${esc(k)}">${esc(label)}</span>`)
+    .join('');
+
+  const rows = S.stock.filter((r) => filter === 'all' || r.chain === filter || r.code === filter);
+  const stores = new Map();
+  for (const r of rows) {
+    const key = r.chain + r.storeCd;
+    if (!stores.has(key)) stores.set(key, { ...r, items: [] });
+    stores.get(key).items.push(r);
+  }
+  const list = [...stores.values()].sort((a, b) => a.distKm - b.distKm);
+  $('stockTitle').textContent = `재고 있는 매장 ${list.length}곳 · ${S.center.name} 반경 ${S.radiusKm}km`;
+  $('stock').innerHTML = list.length
+    ? list.map((s) => `<tr>
+        <td><span class="tag ${s.chain}">${esc(S.chains[s.chain])}</span>
+          <a href="https://map.naver.com/p/search/${encodeURIComponent(S.chains[s.chain] + ' ' + s.store)}" target="_blank" rel="noopener">${esc(s.store)}</a>
+          <div class="muted">${esc(s.addr)}</div></td>
+        <td>${s.items.map((i) => `<div>${esc(i.product)} <span class="q">${i.qty}개</span> <span class="muted">${ago(i.at)}</span></div>`).join('')}</td>
+        <td style="text-align:right;white-space:nowrap">${s.distKm.toFixed(1)}km</td></tr>`).join('')
+    : `<tr><td colspan="3" class="empty">${selected.length ? (st.lastRun || !st.running ? '지금은 재고 있는 매장이 없습니다' : '첫 조회 중입니다…') : '위에서 추적할 카드를 골라주세요'}</td></tr>`;
+
+  layer.clearLayers();
+  L.circle([S.center.lat, S.center.lng], { radius: S.radiusKm * 1000, color: '#888', weight: 1, fill: false }).addTo(layer);
+  L.circleMarker([S.center.lat, S.center.lng], { radius: 5, color: '#228be6' }).bindPopup(esc(S.center.name)).addTo(layer);
+  for (const s of list) {
+    L.circleMarker([s.lat, s.lng], { radius: 7, weight: 2, color: s.chain === 'seven' ? '#e8590c' : '#e0a800', fillOpacity: 0.6 })
+      .bindPopup(`<b>${esc(S.chains[s.chain])} ${esc(s.store)}</b><br>${s.items.map((i) => `${esc(i.product)} ${i.qty}개`).join('<br>')}`)
+      .addTo(layer);
+  }
+  const fitKey = `${S.center.lat},${S.center.lng},${S.radiusKm}`;
+  if (fitted !== fitKey) {
+    fitted = fitKey;
+    map.fitBounds(L.latLng(S.center.lat, S.center.lng).toBounds(S.radiusKm * 2000));
+  }
+
+  $('events').innerHTML = S.events.length
+    ? S.events.map((e) => `<tr><td class="muted" style="white-space:nowrap">${ago(e.at)}</td>
+        <td><span class="tag ${e.chain}">${esc(S.chains[e.chain])}</span> ${esc(e.store)}<div class="muted">${esc(e.product)}</div></td>
+        <td class="${e.to > e.from ? 'up' : 'down'}" style="text-align:right;white-space:nowrap">${e.from === 0 ? '입고 ' : e.to === 0 ? '품절 ' : ''}${e.from} → ${e.to}</td></tr>`).join('')
+    : '<tr><td class="empty">아직 변동이 없습니다 (첫 조회 이후의 변화부터 기록됩니다)</td></tr>';
+
+  $('centerLabel').textContent = `기준: ${S.center.name}`;
+  if (document.activeElement !== $('radius')) $('radius').value = S.radiusKm;
+  if (document.activeElement !== $('interval')) $('interval').value = S.intervalMin;
+}
+
+async function load() {
+  try {
+    S = await fetch(STATIC ? `data.json?t=${Date.now()}` : '/api/state').then((r) => r.json());
+    render();
+  } catch {
+    $('status').textContent = STATIC ? '데이터를 불러오지 못했습니다' : '서버에 연결할 수 없습니다 (맥에서 서버가 켜져 있는지 확인)';
+  }
+}
+
+$('products').onclick = async (e) => {
+  const el = e.target.closest('.prod');
+  if (!el || STATIC) return;
+  S = await post('/api/select', { code: el.dataset.code, on: !el.classList.contains('sel') });
+  render();
+};
+$('filters').onclick = (e) => {
+  const el = e.target.closest('.chip');
+  if (el) { filter = el.dataset.f; render(); }
+};
+$('refresh').onclick = async () => { await post('/api/refresh'); load(); };
+$('save').onclick = async () => {
+  S = await post('/api/settings', { radiusKm: +$('radius').value, intervalMin: +$('interval').value });
+  render();
+};
+$('pick').onclick = () => {
+  picking = !picking;
+  $('pick').textContent = picking ? '지도에서 새 기준 위치를 누르세요 (취소)' : '지도에서 기준 위치 바꾸기';
+  if (picking) $('map').scrollIntoView({ behavior: 'smooth', block: 'center' });
+};
+map.on('click', async (e) => {
+  if (!picking) return;
+  picking = false;
+  $('pick').textContent = '지도에서 기준 위치 바꾸기';
+  S = await post('/api/settings', { lat: e.latlng.lat, lng: e.latlng.lng, name: '직접 지정' });
+  render();
+});
+
+if (STATIC) {
+  $('prodHint').textContent = '';
+  for (const id of ['refresh', 'save', 'pick']) $(id).hidden = true;
+  for (const id of ['radius', 'interval']) $(id).disabled = true;
+}
+load();
+setInterval(load, STATIC ? 60000 : 15000);
+</script>
+</body>
+</html>
